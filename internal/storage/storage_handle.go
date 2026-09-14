@@ -56,13 +56,15 @@ const (
 
 	zonalLocationType = "zone"
 
+	// nonExistentObjectName is the object name used for bucket existence/access check when HNS feature is disabled by providing "--enable-hns:false". E.g. Using Regional Endpoints which do not support GRPC protocol.
+	nonExistentObjectName = "gcsfuse-nonexistent-object-check"
+)
+
+var (
 	// DirectPath detection parameters - used for fast-fail detection during client creation
 	directPathDetectionMaxAttempts = 5
 	directPathDetectionTimeout     = 15 * time.Second
 	directPathDetectionMaxBackoff  = 5 * time.Second
-
-	// nonExistentObjectName is the object name used for bucket existence/access check when HNS feature is disabled by providing "--enable-hns:false". E.g. Using Regional Endpoints which do not support GRPC protocol.
-	nonExistentObjectName = "gcsfuse-nonexistent-object-check"
 )
 
 type StorageHandle interface {
@@ -187,7 +189,7 @@ func setRetryConfig(ctx context.Context, sc *storage.Client, clientConfig *stora
 }
 
 // Followed https://pkg.go.dev/cloud.google.com/go/storage#hdr-Experimental_gRPC_API to create the gRPC client.
-func createGRPCClientHandle(ctx context.Context, clientConfig *storageutil.StorageClientConfig, isBucketRapid bool, enableBidiConfig bool, bucketName string, billingProject string) (*storage.Client, error) {
+func createGRPCClientHandle(ctx context.Context, clientConfig *storageutil.StorageClientConfig, isBucketRapid bool, enableBidiConfig bool, bucketName string, billingProject string, enforceDirectPath bool) (*storage.Client, error) {
 	if err := os.Setenv("GOOGLE_CLOUD_ENABLE_DIRECT_PATH_XDS", "true"); err != nil {
 		return nil, fmt.Errorf("error setting direct path env var: %w", err)
 	}
@@ -199,11 +201,22 @@ func createGRPCClientHandle(ctx context.Context, clientConfig *storageutil.Stora
 		return nil, fmt.Errorf("error in getting clientOpts for gRPC client: %w", err)
 	}
 
+	if enforceDirectPath {
+		clientOpts = append(clientOpts, experimental.WithDirectConnectivityEnforced())
+	}
+
 	sc, err := storage.NewGRPCClient(ctx, clientOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("NewGRPCClient: %w", err)
 	}
 
+	if enforceDirectPath {
+		if verifyErr := verifyDirectPathConnectivity(ctx, clientConfig, bucketName, sc, billingProject); verifyErr != nil {
+			logger.Warnf("DirectPath verification failed with error: %v", verifyErr)
+			return nil, verifyErr
+		}
+		logger.Infof("DirectPath verification succeeded, continuing with DirectPath.")
+	}
 	setRetryConfig(ctx, sc, clientConfig)
 	return sc, nil
 }
@@ -471,7 +484,7 @@ func (sh *storageClient) getClient(ctx context.Context, isBucketRapid bool, buck
 	var err error
 	if isBucketRapid {
 		if sh.grpcClientWithBidiConfig == nil {
-			sh.grpcClientWithBidiConfig, err = createGRPCClientHandle(ctx, &sh.clientConfig, isBucketRapid, true, bucketName, billingProject)
+			sh.grpcClientWithBidiConfig, err = createGRPCClientHandle(ctx, &sh.clientConfig, isBucketRapid, true, bucketName, billingProject, false)
 		}
 		return sh.grpcClientWithBidiConfig, err
 	}
@@ -496,21 +509,20 @@ func (sh *storageClient) createNonBidiGRPCClientWithHttpFallback(ctx context.Con
 	}
 
 	var err error
-	sh.grpcClient, err = createGRPCClientHandle(ctx, &sh.clientConfig, false, false, bucketName, billingProject)
-	// No error means we are able to successfully create a grpc client with direct path. Return it.
-	if err == nil {
-		return sh.grpcClient, nil
+	sh.grpcClient, err = createGRPCClientHandle(ctx, &sh.clientConfig, false, false, bucketName, billingProject, sh.clientConfig.EnforceDirectPath)
+	// When EnforceDirectPath is false (explicit --client-protocol=grpc), Go SDK handles CloudPath fallback;
+	// never fall back to HTTP.
+	if err == nil || !sh.clientConfig.EnforceDirectPath {
+		return sh.grpcClient, err
 	}
 
-	// We will reach here when we failed to create a grpc client with direct path.
-	// Decide whether to create a http client based on grpPathStrategy param.
-	if sh.clientConfig.GrpcPathStrategy == cfg.DirectPathOnly {
-		logger.Infof("Grpc dp is not available and not falling back to Http as gRPC path strategy is set to DirectPathOnly")
-		return nil, err
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
 
-	// When grpcPathStrategy=DirectPathWithFallback, create a http client.
+	// When EnforceDirectPath is true and DirectPath verification fails, fall back to HTTP.
 	logger.Infof("Grpc dp is not available and falling back to Http.")
+	sh.clientConfig.ClientProtocol = cfg.HTTP1
 	if sh.httpClient == nil {
 		sh.httpClient, err = createHTTPClientHandle(ctx, &sh.clientConfig)
 	}
