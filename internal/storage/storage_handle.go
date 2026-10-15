@@ -182,9 +182,24 @@ func createClientOptionForGRPCClient(ctx context.Context, clientConfig *storageu
 		clientOpts = append(clientOpts, storage.WithDisabledClientMetrics())
 	}
 
+	clientOpts = append(clientOpts, npiOtelClientMetricsOptions()...)
 	clientOpts = addReadStallTimeoutOptions(clientConfig, clientOpts)
 
 	return clientOpts, nil
+}
+
+// npiOtelClientMetricsOptions returns the Go storage client options that define the
+// NPI OTEL benchmark arm compiled into this build.
+//
+// Arm B ("Standard Metrics"):
+//   - experimental.WithOtelMetrics()      -> ENABLED  (standard client-side OpenTelemetry metrics)
+//   - experimental.WithOtelDebugMetrics() -> NOT enabled (debug/network-level metrics stay off)
+//
+// The options are applied to both the gRPC (and control) client and the HTTP client.
+// Note: the storage client ignores these options when WithDisabledClientMetrics() is also
+// set (i.e. when experimental-enable-grpc-metrics=false).
+func npiOtelClientMetricsOptions() []option.ClientOption {
+	return []option.ClientOption{experimental.WithOtelMetrics()}
 }
 
 func addReadStallTimeoutOptions(clientConfig *storageutil.StorageClientConfig, clientOpts []option.ClientOption) []option.ClientOption {
@@ -371,6 +386,7 @@ func createHTTPClientHandle(ctx context.Context, clientConfig *storageutil.Stora
 		clientOpts = append(clientOpts, option.WithEndpoint(clientConfig.CustomEndpoint))
 	}
 
+	clientOpts = append(clientOpts, npiOtelClientMetricsOptions()...)
 	clientOpts = addReadStallTimeoutOptions(clientConfig, clientOpts)
 	sc, err = storage.NewClient(ctx, clientOpts...)
 	if err != nil {
