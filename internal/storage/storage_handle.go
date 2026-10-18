@@ -91,7 +91,7 @@ type storageClient struct {
 }
 
 // Return clientOpts for both gRPC client and control client.
-// sdkMetricsOptions enables the Go SDK's standard and debug OpenTelemetry
+// sdkMetricsOptions enables the Go SDK's standard OpenTelemetry
 // client metrics and, when GCSFuse has an SDK MeterProvider configured, routes
 // them through it so they are exported alongside GCSFuse's own metrics.
 //
@@ -102,9 +102,9 @@ func sdkMetricsOptions(clientConfig *storageutil.StorageClientConfig) []option.C
 	if clientConfig.AnonymousAccess {
 		return nil
 	}
+	// Standard-metrics variant: only WithOtelMetrics(), no debug metrics.
 	opts := []option.ClientOption{
 		experimental.WithOtelMetrics(),
-		experimental.WithOtelDebugMetrics(),
 	}
 	if sdkmp, ok := otel.GetMeterProvider().(*sdkmetric.MeterProvider); ok {
 		opts = append(opts, experimental.WithMeterProvider(sdkmp))
