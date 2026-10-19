@@ -102,10 +102,10 @@ func sdkMetricsOptions(clientConfig *storageutil.StorageClientConfig) []option.C
 	if clientConfig.AnonymousAccess {
 		return nil
 	}
-	// Standard-metrics variant: only WithOtelMetrics(), no debug metrics.
-	opts := []option.ClientOption{
-		experimental.WithOtelMetrics(),
-	}
+	// Metrics-OFF variant: neither WithOtelMetrics() nor WithOtelDebugMetrics().
+	// The MeterProvider is still routed so the gRPC built-in metrics keep the
+	// same prefix/labels as the standard and debug variants (apples-to-apples).
+	var opts []option.ClientOption
 	if sdkmp, ok := otel.GetMeterProvider().(*sdkmetric.MeterProvider); ok {
 		opts = append(opts, experimental.WithMeterProvider(sdkmp))
 	}
